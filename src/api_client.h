@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -8,8 +9,6 @@
 #include <boost/beast.hpp>
 
 #include <thread>
-#include <future>
-#include <queue> 
 #include <mutex>
 
 namespace beast = boost::beast;         // from <boost/beast.hpp>
@@ -28,22 +27,26 @@ public:
     void setPort(int port);                     // Установка порта
     void setHost(const std::string& host);      // Установка хоста
 
-    void reconnect();                           // Переподключение
+    void Connect();                           // Переподключение
     
     // Запросы к API
-    json ApiStateRequest();              // Состояние API
+    void ApiStateRequest();              // Состояние API
     std::string AuthenticationTokenRequest();   // Получение токена аутентификации
     bool AuthenticateRequest(const std::string& token); // Аутентификация с токеном
-    json AvailableModelsRequest();       // Доступные модели
-    json CurrentModelRequest();          // Текущая модель
+    void AvailableModelsRequest();       // Доступные модели
+    void CurrentModelRequest();          // Текущая модель
 
+    void send(const std::string& message);
+    void message_handler(std::function<void(std::string)> handler);
     // Управления подписками
-    bool Subscribe();
-    bool unSubscribe();
+    void Subscribe();
+    void unSubscribe();
 
-    // 
+
 
 private:
+    void do_read();
+
     // Boost.Asio и Boost.Beast объекты для HTTP-запросов
     asio::io_context ioc;
     asio::ip::tcp::resolver resolver {ioc};
@@ -53,7 +56,14 @@ private:
     // Параметры подключения по умолчанию
     std::string host = "localhost";
     int port = 8001;
-    std::string token;  // Токен аутентификации   
+    std::string token;  // Токен аутентификации
+    
+    // Ассинхронный поток
+    std::thread thread_;
+    std::mutex mutex_;
+    beast::flat_buffer buffer_;
+    std::function<void(std::string)> message_handler_;
+
 
 };
 

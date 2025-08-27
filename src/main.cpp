@@ -1,51 +1,23 @@
 #include "api_client.h"
 
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 int main(int argc, char** argv) {
-    int i;
     while (true) {
         try {
             VTSClient vtsClient;
+            vtsClient.message_handler([](std::string msg){
+                std::cout << "Received: " << msg << std::endl;
+            });
+            vtsClient.Subscribe();
 
-            while (true) {
-                switch (std::cin >> i, i) {
-                    case 1: {
-                        json state = vtsClient.ApiStateRequest();
-                        std::cout << "API State: " << state.dump(4) << std::endl;
-                        break;
-                    }
-                    case 2: {
-                        json models = vtsClient.AvailableModelsRequest();
-                        std::cout << "Available Models: " << models.dump(4) << std::endl;
-                        break;
-                    }
-                    case 3: {
-                        json currentModel = vtsClient.CurrentModelRequest();
-                        std::cout << "Current Model: " << currentModel.dump(4) << std::endl;
-                        break;
-                    }
-                    case 4: {
-                        vtsClient.reconnect();
-                        std::cout << "Reconnected to VTS." << std::endl;
-                        break;
-                    }
-                    case 5: {
-                        std::cout << "Subscribe State: " << vtsClient.Subscribe();
-                        break;
-                    }
-                    case 6: {
-                        std::cout << "unSubscribe State: " << vtsClient.unSubscribe();
-                        break;
-                    }
-                    case 0: {
-                        std::cout << "Exiting..." << std::endl;
-                        return 0;
-                    }
-                    default:
-                        std::cout << "Invalid choice. Please select a valid option." << std::endl;
+            
+            while (true)
+                {                    
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
                 }
-            }
         } catch (const std::exception& e) {
             std::cerr << "Exception: " << e.what() << std::endl;
         }

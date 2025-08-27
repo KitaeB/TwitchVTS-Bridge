@@ -1,9 +1,17 @@
 #include "api_client.h"
 
+#include <boost/asio/ip/basic_resolver_iterator.hpp>
+#include <boost/beast/core/buffers_to_string.hpp>
+#include <boost/beast/core/error.hpp>
 #include <boost/intrusive/options.hpp>
+#include <boost/system/detail/error_code.hpp>
+#include <functional>
+#include <future>
+#include <mutex>
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <thread>
 
 void point(int i) { std::cout << "Point " << i << std::endl; }
 
@@ -11,38 +19,21 @@ void point(int i) { std::cout << "Point " << i << std::endl; }
 
 // Конструктор и деструктор клиента VTS
 VTSClient::VTSClient() {
-    auto results = resolver.resolve(host, std::to_string(port));
-
+    thread_ = std::thread([this] { ioc.run(); });
+    auto const results = resolver.resolve(host, std::to_string(port));
     asio::connect(ws.next_layer(), results);
-    beast::error_code ec;
-    ws.handshake(host + ":" + std::to_string(port), "/", ec);
-    if (ec) {
-        std::cerr << "Handshake error: " << ec.value() << " - " << ec.message() << std::endl;
-        throw std::runtime_error(ec.message());
-    }
+    
+    ws.async_handshake(host + ":" + std::to_string(port), "/", [this](boost::system::error_code ec) {
+        if (!ec) do_read();
+    });
 
-    // Проверим наличие токена аутентификации в файле
-    std::ifstream tokenFile("config");  // Файл для хранения токена
-    if (tokenFile.is_open()) {
-        std::getline(tokenFile, token);
-        tokenFile.close();
-    }
-    // Если токен есть, попробуем аутентифицироваться
-    if (token.empty() || (!token.empty() && !AuthenticateRequest(token))) {
-        // Иначе запросим новый токен
-        token = AuthenticationTokenRequest();
-
-        // Сохраним токен в файл
-        std::ofstream outFile("config");  // Файл для хранения токена
-        point(6);
-        if (outFile.is_open()) {
-            outFile << token;
-            outFile.close();
-        }
-    }
+    Connect();
 }
 
 VTSClient::~VTSClient() {
+    ioc.stop();
+    if (thread_.joinable()) thread_.join();
+
     // Деструктор
     beast::error_code ec;
     if (ws.is_open()) {
@@ -57,25 +48,8 @@ VTSClient::~VTSClient() {
 void VTSClient::setPort(int port) { this->port = port; }
 void VTSClient::setHost(const std::string& host) { this->host = host; }
 
-// Переподключение
-void VTSClient::reconnect() {
-    // Переподключение
-    beast::error_code ec;
-    if (ws.is_open()) {
-        ws.close(beast::websocket::close_code::normal, ec);
-        if (ec) {
-            std::cerr << "Error closing WebSocket (" << ec.value() << "): " << ec.message() << std::endl;
-        }
-    }
-    auto results = resolver.resolve(host, std::to_string(port));
-    asio::connect(ws.next_layer(), results);
-
-    ws.handshake(host + ":" + std::to_string(port), "/", ec);
-    if (ec) {
-        std::cerr << "Handshake error: " << ec.value() << " - " << ec.message() << std::endl;
-        throw std::runtime_error(ec.message());
-    }
-
+// Подключение к VTS
+void VTSClient::Connect() {
     // Проверим наличие токена аутентификации в файле
     std::ifstream tokenFile("config");  // Файл для хранения токена
     if (tokenFile.is_open()) {
@@ -87,42 +61,59 @@ void VTSClient::reconnect() {
         // Иначе запросим новый токен
         token = AuthenticationTokenRequest();
 
-        // Сохраним токен в файл
-        std::ofstream outFile("config");  // Файл для хранения токена
-        point(6);
-        if (outFile.is_open()) {
-            outFile << token;
-            outFile.close();
-        }
+        if (!token.empty() && AuthenticateRequest(token)) {
+            std::ofstream outFile("config");  // Файл для хранения токена
+            if (outFile.is_open()) {
+                outFile << token;
+                outFile.close();
+            }
+        } // esle бла бла бла
     }
 }
 
+void VTSClient::do_read() {
+    ws.async_read(buffer_, [this](beast::error_code ec, std::size_t byte_transferred){
+        if (!ec) {
+            std::string msg = beast::buffers_to_string(buffer_.data());
+            buffer_.consume(buffer_.size());
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(message_handler_) message_handler_(msg);;
+
+            do_read();
+        }
+    });
+}
+
 // Запросы к API
-json VTSClient::ApiStateRequest() {  // Состояние API, возвращает JSON-строку с состоянием
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
+void VTSClient::send(const std::string& message) {
+    std::promise<void> promise;
+    auto future = promise.get_future();
+
+    ws.async_write(asio::buffer(message),
+        [&promise](beast::error_code ec, std::size_t){
+            if (!ec)
+                promise.set_value();
+        });
+    future.get();
+}
+
+void VTSClient::message_handler(std::function<void(std::string)> handler) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    message_handler_ = handler;
+
+}
+
+void VTSClient::ApiStateRequest() {  // Состояние API, возвращает JSON-строку с состоянием
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
                                 "messageType":"APIStateRequest"
                             })";
 
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-
-    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
+    this->send(request);
 }
 
 std::string VTSClient::AuthenticationTokenRequest() {
-    // Получение токена аутентификации
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
@@ -143,10 +134,6 @@ std::string VTSClient::AuthenticationTokenRequest() {
 }
 
 bool VTSClient::AuthenticateRequest(const std::string& token) {  // Аутентификация с применением токена, возвращает true/false
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
@@ -165,52 +152,29 @@ bool VTSClient::AuthenticateRequest(const std::string& token) {  // Аутент
     return json::parse(beast::buffers_to_string(buffer.data()))["data"]["authenticated"];
 }
 
-json VTSClient::AvailableModelsRequest() {  // Доступные модели, возвращает JSON-строку с моделями
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
+void VTSClient::AvailableModelsRequest() {  // Доступные модели, возвращает JSON-строку с моделями
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
                                 "messageType":"AvailableModelsRequest"
                             })";
 
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-
-    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
+    this->send(request);
 }
 
-json VTSClient::CurrentModelRequest() {  // Запрос текущей модели, возвращает JSON-строку с информацией о модели
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
+void VTSClient::CurrentModelRequest() {  // Запрос текущей модели, возвращает JSON-строку с информацией о модели
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
                                 "messageType":"CurrentModelRequest"
                             })";
 
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-
-    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
+    this->send(request);
 }
 
 // Управления подписками (Event)
 
-bool VTSClient::Subscribe() {
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
-
+void VTSClient::Subscribe() {
     std::string request = R"({"apiName": "VTubeStudioPublicAPI",
                                 "apiVersion": "1.0",
                                 "requestID": "SomeID",
@@ -222,20 +186,10 @@ bool VTSClient::Subscribe() {
                                     }
                                 }
                         })";
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-    return !json::parse(beast::buffers_to_string(buffer.data()))["data"].contains("ErrorId");
+    this->send(request);
 }
 
-
-bool VTSClient::unSubscribe() {
-    if (!ws.is_open()) {
-        std::cout << "WebSocket is not open. Reconnecting..." << std::endl;
-        reconnect();
-    }
-
+void VTSClient::unSubscribe() {
     std::string request = R"({"apiName": "VTubeStudioPublicAPI",
                                 "apiVersion": "1.0",
                                 "requestID": "SomeID",
@@ -247,11 +201,7 @@ bool VTSClient::unSubscribe() {
                                     }
                                 }
                         })";
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-    return !json::parse(beast::buffers_to_string(buffer.data()))["data"].contains("ErrorId");
+    this->send(request);
 }
 
 #pragma endregion
