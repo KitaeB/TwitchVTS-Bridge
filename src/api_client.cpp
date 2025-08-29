@@ -1,55 +1,29 @@
 #include "api_client.h"
+#include <httplib.h>
 
-#include <boost/asio/ip/basic_resolver_iterator.hpp>
-#include <boost/beast/core/buffers_to_string.hpp>
-#include <boost/beast/core/error.hpp>
 #include <boost/intrusive/options.hpp>
-#include <boost/system/detail/error_code.hpp>
-#include <functional>
-#include <future>
-#include <mutex>
+#include <cstdlib>
 #include <string>
 #include <iostream>
 #include <fstream>
-#include <thread>
 
-void point(int i) { std::cout << "Point " << i << std::endl; }
+#
 
 #pragma region VTS
 
 // Конструктор и деструктор клиента VTS
 VTSClient::VTSClient() {
-    thread_ = std::thread([this] { ioc.run(); });
-    auto const results = resolver.resolve(host, std::to_string(port));
-    asio::connect(ws.next_layer(), results);
     
-    ws.async_handshake(host + ":" + std::to_string(port), "/", [this](boost::system::error_code ec) {
-        if (!ec) do_read();
-    });
+    auto results = resolver.resolve(host, std::to_string(port));
 
-    Connect();
-}
-
-VTSClient::~VTSClient() {
-    ioc.stop();
-    if (thread_.joinable()) thread_.join();
-
-    // Деструктор
+    asio::connect(ws.next_layer(), results);
     beast::error_code ec;
-    if (ws.is_open()) {
-        ws.close(beast::websocket::close_code::normal, ec);
-        if (ec) {
-            std::cerr << "Error closing WebSocket: " << ec.message() << std::endl;
-        }
+    ws.handshake(host + ":" + std::to_string(port), "/", ec);
+    if (ec) {
+        std::cerr << "Handshake error: " << ec.value() << " - " << ec.message() << std::endl;
+        throw std::runtime_error(ec.message());
     }
-}
 
-// Настройка подключения
-void VTSClient::setPort(int port) { this->port = port; }
-void VTSClient::setHost(const std::string& host) { this->host = host; }
-
-// Подключение к VTS
-void VTSClient::Connect() {
     // Проверим наличие токена аутентификации в файле
     std::ifstream tokenFile("config");  // Файл для хранения токена
     if (tokenFile.is_open()) {
@@ -61,59 +35,53 @@ void VTSClient::Connect() {
         // Иначе запросим новый токен
         token = AuthenticationTokenRequest();
 
-        if (!token.empty() && AuthenticateRequest(token)) {
-            std::ofstream outFile("config");  // Файл для хранения токена
-            if (outFile.is_open()) {
-                outFile << token;
-                outFile.close();
-            }
-        } // esle бла бла бла
+        // Сохраним токен в файл
+        std::ofstream outFile("config");  // Файл для хранения токена
+        if (outFile.is_open()) {
+            outFile << token;
+            outFile.close();
+        }
     }
 }
 
-void VTSClient::do_read() {
-    ws.async_read(buffer_, [this](beast::error_code ec, std::size_t byte_transferred){
-        if (!ec) {
-            std::string msg = beast::buffers_to_string(buffer_.data());
-            buffer_.consume(buffer_.size());
-            std::lock_guard<std::mutex> lock(mutex_);
-            if(message_handler_) message_handler_(msg);;
+VTSClient::~VTSClient() {
 
-            do_read();
+    // Деструктор
+    beast::error_code ec;
+    if (ws.is_open()) {
+        ws.close(beast::websocket::close_code::normal, ec);
+        if(ec) {
+            std::cerr << "Error closing WebSocket: " << ec.message() << std::endl;
         }
-    });
+    }
 }
+
+void VTSClient::setPort(int port) {
+    this->port = port;
+}
+void VTSClient::setHost(const std::string& host) {
+    this->host = host;
+}
+
 
 // Запросы к API
-void VTSClient::send(const std::string& message) {
-    std::promise<void> promise;
-    auto future = promise.get_future();
-
-    ws.async_write(asio::buffer(message),
-        [&promise](beast::error_code ec, std::size_t){
-            if (!ec)
-                promise.set_value();
-        });
-    future.get();
-}
-
-void VTSClient::message_handler(std::function<void(std::string)> handler) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    message_handler_ = handler;
-
-}
-
-void VTSClient::ApiStateRequest() {  // Состояние API, возвращает JSON-строку с состоянием
+json VTSClient::ApiStateRequest() {  // Состояние API, возвращает JSON-строку с состоянием
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
                                 "messageType":"APIStateRequest"
                             })";
 
-    this->send(request);
+    ws.write(asio::buffer(request));
+
+    beast::flat_buffer buffer;
+    ws.read(buffer);
+
+    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
 }
 
 std::string VTSClient::AuthenticationTokenRequest() {
+    // Получение токена аутентификации
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
@@ -152,29 +120,40 @@ bool VTSClient::AuthenticateRequest(const std::string& token) {  // Аутент
     return json::parse(beast::buffers_to_string(buffer.data()))["data"]["authenticated"];
 }
 
-void VTSClient::AvailableModelsRequest() {  // Доступные модели, возвращает JSON-строку с моделями
+json VTSClient::AvailableModelsRequest() {  // Доступные модели, возвращает JSON-строку с моделями
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
                                 "messageType":"AvailableModelsRequest"
                             })";
 
-    this->send(request);
+    ws.write(asio::buffer(request));
+
+    beast::flat_buffer buffer;
+    ws.read(buffer);
+
+    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
 }
 
-void VTSClient::CurrentModelRequest() {  // Запрос текущей модели, возвращает JSON-строку с информацией о модели
+json VTSClient::CurrentModelRequest() {  // Запрос текущей модели, возвращает JSON-строку с информацией о модели
     std::string request = R"({"apiName":"VTubeStudioPublicAPI",
                                 "apiVersion":"1.0",
                                 "requestID":"1",
                                 "messageType":"CurrentModelRequest"
                             })";
 
-    this->send(request);
+    ws.write(asio::buffer(request));
+
+    beast::flat_buffer buffer;
+    ws.read(buffer);
+
+    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
 }
 
 // Управления подписками (Event)
 
-void VTSClient::Subscribe() {
+bool VTSClient::Subscribe() {
+
     std::string request = R"({"apiName": "VTubeStudioPublicAPI",
                                 "apiVersion": "1.0",
                                 "requestID": "SomeID",
@@ -186,10 +165,16 @@ void VTSClient::Subscribe() {
                                     }
                                 }
                         })";
-    this->send(request);
+    ws.write(asio::buffer(request));
+
+    beast::flat_buffer buffer;
+    ws.read(buffer);
+    return !json::parse(beast::buffers_to_string(buffer.data()))["data"].contains("ErrorId");
 }
 
-void VTSClient::unSubscribe() {
+
+bool VTSClient::unSubscribe() {
+
     std::string request = R"({"apiName": "VTubeStudioPublicAPI",
                                 "apiVersion": "1.0",
                                 "requestID": "SomeID",
@@ -201,7 +186,85 @@ void VTSClient::unSubscribe() {
                                     }
                                 }
                         })";
-    this->send(request);
+    ws.write(asio::buffer(request));
+
+    beast::flat_buffer buffer;
+    ws.read(buffer);
+    return !json::parse(beast::buffers_to_string(buffer.data()))["data"].contains("ErrorId");
 }
 
 #pragma endregion
+
+#pragma region Twitch
+
+TwitchClient::TwitchClient() {
+    // Конструктор
+    //Читаем файл, если там есть токен, то используем его
+    std::ifstream tokenFile("twitch_config");  // Файл для хранения токена
+    if (tokenFile.is_open()) {
+        std::getline(tokenFile, token);
+        tokenFile.close();
+    } else {
+        // Иначе запрашиваем новый токен
+        getAccessToken();
+    }
+
+    std::cout << "Twitch Token: " << token << std::endl;
+}
+
+TwitchClient::~TwitchClient() {
+    // Деструктор
+}
+
+void TwitchClient::getAccessToken() {
+    // Запрос токена доступа (Access Token) у Twitch
+    httplib::Server srv;
+    srv.Get("/callback", [&](const httplib::Request& req, httplib::Response& res) {
+
+        std::string cmd = "start \"\" \"https://id.twitch.tv/oauth2/authorize?client_id=" + client_id +
+                      "&redirect_uri=" + redirect_uri +
+                      "&response_type=code&scope=channel:manage:redemptions\"";
+
+        system(cmd.c_str());
+
+        if(req.has_param("code")) {
+            std::string code = req.get_param_value("code");
+
+            cpr::Response r = cpr::Post(cpr::Url{"https://id.twitch.tv/oauth2/token"},
+                                        cpr::Payload{
+                                            {"client_id", client_id},
+                                            {"client_secret", client_secret}, // Замените на ваш клиентский секрет
+                                            {"code", code},
+                                            {"grant_type", "authorization_code"},
+                                            {"redirect_uri", redirect_uri}
+                                        });
+
+            if (r.status_code == 200) {
+                auto response_json = json::parse(r.text);
+                token = response_json["access_token"];
+
+                // Сохраним токен в файл
+                std::ofstream outFile("twitch_config");  // Файл для хранения токена
+                if (outFile.is_open()) {
+                    outFile << token;
+                    outFile.close();
+                }
+
+                res.set_content("Authentication successful! You can close this window.", "text/plain");
+            } else {
+                res.set_content("Failed to get access token.", "text/plain");
+            }
+        } else {
+            res.set_content("No code parameter found in the request.", "text/plain");
+        }
+    });
+
+    srv.listen("localhost", 30101);
+    
+    //Запишем токен в файл
+    std::ofstream outFile("twitch_config");  // Файл для хранения токена
+    if (outFile.is_open()) {
+        outFile << token;
+        outFile.close();
+    }
+}

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <functional>
+#include <nlohmann/json_fwd.hpp>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -8,14 +8,11 @@
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
 
-#include <thread>
-#include <mutex>
+#include <cpr/cpr.h>
+#include <httplib.h>
 
 namespace beast = boost::beast;         // from <boost/beast.hpp>
 namespace asio = boost::asio;            // from <boost/asio.hpp>
-namespace websocket = beast::websocket; // from <boost/beast/websocket.hpp>
-using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
-
 using json = nlohmann::json;
 
 class VTSClient {
@@ -26,22 +23,17 @@ public:
     // Настройка подключения
     void setPort(int port);                     // Установка порта
     void setHost(const std::string& host);      // Установка хоста
-
-    void Connect();                           // Переподключение
     
     // Запросы к API
-    void ApiStateRequest();              // Состояние API
+    json ApiStateRequest();              // Состояние API
     std::string AuthenticationTokenRequest();   // Получение токена аутентификации
     bool AuthenticateRequest(const std::string& token); // Аутентификация с токеном
-    void AvailableModelsRequest();       // Доступные модели
-    void CurrentModelRequest();          // Текущая модель
+    json AvailableModelsRequest();       // Доступные модели
+    json CurrentModelRequest();          // Текущая модель
 
-    void send(const std::string& message);
-    void message_handler(std::function<void(std::string)> handler);
     // Управления подписками
-    void Subscribe();
-    void unSubscribe();
-
+    bool Subscribe();
+    bool unSubscribe();
 
 
 private:
@@ -49,26 +41,30 @@ private:
 
     // Boost.Asio и Boost.Beast объекты для HTTP-запросов
     asio::io_context ioc;
-    asio::ip::tcp::resolver resolver {ioc};
-    websocket::stream<tcp::socket> ws {ioc};
-    
+    asio::ip::tcp::resolver resolver{ioc};
+    beast::websocket::stream<asio::ip::tcp::socket> ws{ioc};
     
     // Параметры подключения по умолчанию
     std::string host = "localhost";
     int port = 8001;
-    std::string token;  // Токен аутентификации
-    
-    // Ассинхронный поток
-    std::thread thread_;
-    std::mutex mutex_;
-    beast::flat_buffer buffer_;
-    std::function<void(std::string)> message_handler_;
-
+    std::string token;  // Токен аутентификации   
 
 };
 
 class TwitchClient {
 public:
+    TwitchClient();
+    ~TwitchClient();
+
+    void getAccessToken();
+
 
 private:
+    std::string client_id = "x4h6z4f3b1z8y3b5z1y9r0n2f5w8a1";
+    std::string client_secret = "8271hcy8jff62wv4w4btgo3mxkqgb2";
+    std::string redirect_uri = "https://localhost:30101/callback";
+    std::string scope = "channel:manage:polls channel:read:polls";
+    std::string auth_url = "https://id.twitch.tv/oauth2/authorize";
+    std::string token;
+
 };
