@@ -1,6 +1,4 @@
 #pragma once
-
-#include <nlohmann/json_fwd.hpp>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -8,11 +6,14 @@
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
 
-#include <cpr/cpr.h>
+#include <cpr/api.h>
+#include <cpr/response.h>
+
 #include <httplib.h>
 
+
 namespace beast = boost::beast;         // from <boost/beast.hpp>
-namespace asio = boost::asio;            // from <boost/asio.hpp>
+namespace basio = boost::asio;
 using json = nlohmann::json;
 
 class VTSClient {
@@ -33,9 +34,9 @@ public:
 
 private:
     // Boost.Asio и Boost.Beast объекты для HTTP-запросов
-    asio::io_context ioc;
-    asio::ip::tcp::resolver resolver{ioc};
-    beast::websocket::stream<asio::ip::tcp::socket> ws{ioc};
+    basio::io_context ioc;
+    basio::ip::tcp::resolver resolver{ioc};
+    beast::websocket::stream<basio::ip::tcp::socket> ws{ioc};
     
     // Параметры подключения по умолчанию
     std::string host = "localhost";

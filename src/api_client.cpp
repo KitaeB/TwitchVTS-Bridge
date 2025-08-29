@@ -1,19 +1,11 @@
 #include "api_client.h"
-#include <cpr/curl_container.h>
-#include <cpr/parameters.h>
-#include <httplib.h>
+
 #include <shellapi.h>
 
-#include <boost/intrusive/options.hpp>
-
-#include <cstddef>
-#include <initializer_list>
 #include <string>
 #include <iostream>
 #include <fstream>
 #include <thread>
-
-#
 
 #pragma region VTS
 
@@ -21,7 +13,7 @@
 VTSClient::VTSClient() {
     auto results = resolver.resolve(host, std::to_string(port));
 
-    asio::connect(ws.next_layer(), results);
+    basio::connect(ws.next_layer(), results);
     beast::error_code ec;
     ws.handshake(host + ":" + std::to_string(port), "/", ec);
     if (ec) {
@@ -39,6 +31,11 @@ VTSClient::VTSClient() {
     if (token.empty() || (!token.empty() && !AuthenticateRequest(token))) {
         // Иначе запросим новый токен
         token = AuthenticationTokenRequest();
+        if (!token.empty()) {
+            AuthenticateRequest(token);
+        } else {
+            throw std::runtime_error("Failed to get authentication token from VTS");
+        }
 
         // Сохраним токен в файл
         std::ofstream outFile("config");  // Файл для хранения токена
@@ -71,7 +68,7 @@ json VTSClient::ApiStateRequest() {  // Состояние API, возвраща
                                 "messageType":"APIStateRequest"
                             })";
 
-    ws.write(asio::buffer(request));
+    ws.write(basio::buffer(request));
 
     beast::flat_buffer buffer;
     ws.read(buffer);
@@ -92,7 +89,7 @@ std::string VTSClient::AuthenticationTokenRequest() {
                                 }
                             })";
 
-    ws.write(asio::buffer(request));
+    ws.write(basio::buffer(request));
 
     beast::flat_buffer buffer;
     ws.read(buffer);
@@ -112,7 +109,7 @@ bool VTSClient::AuthenticateRequest(const std::string& token) {  // Аутент
                           token + R"("}
                             })";
 
-    ws.write(asio::buffer(request));
+    ws.write(basio::buffer(request));
 
     beast::flat_buffer buffer;
     ws.read(buffer);
@@ -126,12 +123,12 @@ json VTSClient::AvailableModelsRequest() {  // Доступные модели, 
                                 "messageType":"AvailableModelsRequest"
                             })";
 
-    ws.write(asio::buffer(request));
+    ws.write(basio::buffer(request));
 
     beast::flat_buffer buffer;
     ws.read(buffer);
 
-    return json::parse(beast::buffers_to_string(buffer.data()))["data"];
+    return json::parse(beast::buffers_to_string(buffer.data()))["data"]["availableModels"];
 }
 
 json VTSClient::CurrentModelRequest() {  // Запрос текущей модели, возвращает JSON-строку с информацией о модели
@@ -141,7 +138,7 @@ json VTSClient::CurrentModelRequest() {  // Запрос текущей моде
                                 "messageType":"CurrentModelRequest"
                             })";
 
-    ws.write(asio::buffer(request));
+    ws.write(basio::buffer(request));
 
     beast::flat_buffer buffer;
     ws.read(buffer);
@@ -313,9 +310,6 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
         getBroadcastInfo();
     }
     json body = {
-        {"title", title},
-        {"prompt", prompt},
-        {"cost", cost},
         {"is_enabled", is_enabled},
     };
 
