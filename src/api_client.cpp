@@ -1,11 +1,17 @@
 #include "api_client.h"
+#include <cpr/curl_container.h>
+#include <cpr/parameters.h>
 #include <httplib.h>
+#include <shellapi.h>
 
 #include <boost/intrusive/options.hpp>
-#include <cstdlib>
+
+#include <cstddef>
+#include <initializer_list>
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <thread>
 
 #
 
@@ -13,7 +19,6 @@
 
 // Конструктор и деструктор клиента VTS
 VTSClient::VTSClient() {
-    
     auto results = resolver.resolve(host, std::to_string(port));
 
     asio::connect(ws.next_layer(), results);
@@ -45,24 +50,18 @@ VTSClient::VTSClient() {
 }
 
 VTSClient::~VTSClient() {
-
     // Деструктор
     beast::error_code ec;
     if (ws.is_open()) {
         ws.close(beast::websocket::close_code::normal, ec);
-        if(ec) {
+        if (ec) {
             std::cerr << "Error closing WebSocket: " << ec.message() << std::endl;
         }
     }
 }
 
-void VTSClient::setPort(int port) {
-    this->port = port;
-}
-void VTSClient::setHost(const std::string& host) {
-    this->host = host;
-}
-
+void VTSClient::setPort(int port) { this->port = port; }
+void VTSClient::setHost(const std::string& host) { this->host = host; }
 
 // Запросы к API
 json VTSClient::ApiStateRequest() {  // Состояние API, возвращает JSON-строку с состоянием
@@ -149,67 +148,23 @@ json VTSClient::CurrentModelRequest() {  // Запрос текущей моде
 
     return json::parse(beast::buffers_to_string(buffer.data()))["data"];
 }
-
-// Управления подписками (Event)
-
-bool VTSClient::Subscribe() {
-
-    std::string request = R"({"apiName": "VTubeStudioPublicAPI",
-                                "apiVersion": "1.0",
-                                "requestID": "SomeID",
-                                "messageType": "EventSubscriptionRequest",
-                                "data": {
-                                    "eventName": "ModelLoadedEvent",
-                                    "subscribe": true,
-                                    "config": {
-                                    }
-                                }
-                        })";
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-    return !json::parse(beast::buffers_to_string(buffer.data()))["data"].contains("ErrorId");
-}
-
-
-bool VTSClient::unSubscribe() {
-
-    std::string request = R"({"apiName": "VTubeStudioPublicAPI",
-                                "apiVersion": "1.0",
-                                "requestID": "SomeID",
-                                "messageType": "EventSubscriptionRequest",
-                                "data": {
-                                    "eventName": "ModelLoadedEvent",
-                                    "subscribe": false,
-                                    "config": {
-                                    }
-                                }
-                        })";
-    ws.write(asio::buffer(request));
-
-    beast::flat_buffer buffer;
-    ws.read(buffer);
-    return !json::parse(beast::buffers_to_string(buffer.data()))["data"].contains("ErrorId");
-}
-
 #pragma endregion
 
 #pragma region Twitch
 
 TwitchClient::TwitchClient() {
     // Конструктор
-    //Читаем файл, если там есть токен, то используем его
+    // Читаем файл, если там есть refresh токен, то используем его
     std::ifstream tokenFile("twitch_config");  // Файл для хранения токена
     if (tokenFile.is_open()) {
-        std::getline(tokenFile, token);
+        std::getline(tokenFile, RefreshToken);
         tokenFile.close();
+        // Обновляем Access Token
+        updateAccessToken();
     } else {
         // Иначе запрашиваем новый токен
         getAccessToken();
     }
-
-    std::cout << "Twitch Token: " << token << std::endl;
 }
 
 TwitchClient::~TwitchClient() {
@@ -220,51 +175,162 @@ void TwitchClient::getAccessToken() {
     // Запрос токена доступа (Access Token) у Twitch
     httplib::Server srv;
     srv.Get("/callback", [&](const httplib::Request& req, httplib::Response& res) {
-
-        std::string cmd = "start \"\" \"https://id.twitch.tv/oauth2/authorize?client_id=" + client_id +
-                      "&redirect_uri=" + redirect_uri +
-                      "&response_type=code&scope=channel:manage:redemptions\"";
-
-        system(cmd.c_str());
-
-        if(req.has_param("code")) {
-            std::string code = req.get_param_value("code");
-
-            cpr::Response r = cpr::Post(cpr::Url{"https://id.twitch.tv/oauth2/token"},
-                                        cpr::Payload{
-                                            {"client_id", client_id},
-                                            {"client_secret", client_secret}, // Замените на ваш клиентский секрет
-                                            {"code", code},
-                                            {"grant_type", "authorization_code"},
-                                            {"redirect_uri", redirect_uri}
-                                        });
-
-            if (r.status_code == 200) {
-                auto response_json = json::parse(r.text);
-                token = response_json["access_token"];
-
-                // Сохраним токен в файл
-                std::ofstream outFile("twitch_config");  // Файл для хранения токена
-                if (outFile.is_open()) {
-                    outFile << token;
-                    outFile.close();
-                }
-
-                res.set_content("Authentication successful! You can close this window.", "text/plain");
-            } else {
-                res.set_content("Failed to get access token.", "text/plain");
-            }
-        } else {
-            res.set_content("No code parameter found in the request.", "text/plain");
-        }
+        code = req.get_param_value("code");
+        // HTML код для закрытия страницы
+        std::string html = R"(
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Authorization Complete</title>
+                        <meta charset="UTF-8">
+                    </head>
+                    <body>
+                        <p>Вы успешно авторизованы! Окно закроется через 3 секунды.</p>
+                        <script>
+                            setTimeout(function() {
+                                window.close();
+                            }, 3000);
+                        </script>
+                    </body>
+                    </html>
+                )";
+        res.set_header("Content-Type", "text/html; charset=UTF-8");
+        res.set_content(html, "text/html");
+        srv.stop();  // останавливаем сервер
     });
+    // Запускаем сервер в отдельном потоке
+    std::thread server_thread([&]() { srv.listen("localhost", 30101); });
 
-    srv.listen("localhost", 30101);
-    
-    //Запишем токен в файл
-    std::ofstream outFile("twitch_config");  // Файл для хранения токена
-    if (outFile.is_open()) {
-        outFile << token;
-        outFile.close();
+    // Открываем браузер для авторизации
+    std::string auth_url = "https://id.twitch.tv/oauth2/authorize?client_id=" + client_id + "&redirect_uri=" + redirect_uri +
+                           "&response_type=code&scope=" + scope;
+#if defined(_WIN32)
+    ShellExecuteA(NULL, "open", auth_url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+#endif
+
+    // Ждем, пока сервер не получит код
+    server_thread.join();
+    // Сервер остановлен, проверяем, получили ли код
+    if (code.empty()) {
+        std::cerr << "Authorization code not received!" << std::endl;
+        return;
+    }
+
+    // Обмен code на токен доступа
+    cpr::Response tokenResponse = cpr::Post(cpr::Url{"https://id.twitch.tv/oauth2/token"}, cpr::Parameters{{"client_id", client_id},
+                                                                                                           {"client_secret", client_secret},
+                                                                                                           {"code", code},
+                                                                                                           {"grant_type", "authorization_code"},
+                                                                                                           {"redirect_uri", redirect_uri}});
+    if (tokenResponse.status_code != 200) {
+        return;
+    } else {
+        auto jsonResponse = json::parse(tokenResponse.text);
+        AccessToken = jsonResponse["access_token"];
+        RefreshToken = jsonResponse["refresh_token"];
+
+        // Запишем токен в файл
+        std::ofstream outFile("twitch_config");  // Файл для хранения токена
+        if (outFile.is_open()) {
+            outFile << RefreshToken;
+            outFile.close();
+        }
     }
 }
+
+void TwitchClient::updateAccessToken() {
+    // Обновление токена доступа (Access Token) у Twitch
+    if (RefreshToken.empty()) {
+        std::cerr << "No refresh token available!" << std::endl;
+        getAccessToken();
+        return;
+    }
+    cpr::Response tokenResponse =
+        cpr::Post(cpr::Url{"https://id.twitch.tv/oauth2/token"},
+                  cpr::Parameters{
+                      {"client_id", client_id}, {"client_secret", client_secret}, {"grant_type", "refresh_token"}, {"refresh_token", RefreshToken}});
+    if (tokenResponse.status_code != 200) {
+        return;
+    } else {
+        auto jsonResponse = json::parse(tokenResponse.text);
+        AccessToken = jsonResponse["access_token"];
+        RefreshToken = jsonResponse["refresh_token"];
+
+        // Запишем токен в файл
+        std::ofstream outFile("twitch_config");  // Файл для хранения токена
+        if (outFile.is_open()) {
+            outFile << RefreshToken;
+            outFile.close();
+        }
+    }
+}
+
+json TwitchClient::getBroadcastInfo() {
+    // Получение информации о пользователе
+    cpr::Response userResponse = cpr::Get(cpr::Url{"https://api.twitch.tv/helix/users"}, cpr::Parameters{},
+                                          cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}});
+
+    if (userResponse.status_code == 401) {
+        updateAccessToken();
+        this->getBroadcastInfo();
+    } else if (userResponse.status_code != 200) {
+        return NULL;
+    } else {
+        json jsonResponse = json::parse(userResponse.text);
+        if (jsonResponse["data"].empty()) {
+            return NULL;
+        }
+        broadcast_id = jsonResponse["data"][0]["id"];
+        return jsonResponse["data"][0];
+    }
+    return NULL;
+}
+
+json TwitchClient::getCustomRewards() {
+    // Получение кастомных наград
+    if (broadcast_id.empty()) {
+        getBroadcastInfo();
+    }
+    cpr::Response rewardsResponse = cpr::Get(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
+                                            cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}},
+                                            cpr::Parameters{{"broadcaster_id", broadcast_id}});
+    if (rewardsResponse.status_code == 401) {
+        updateAccessToken();
+        this->getCustomRewards();
+    } else if (rewardsResponse.status_code != 200) {
+        std::cerr << "Error fetching custom rewards: " << rewardsResponse.status_code << " - " << rewardsResponse.text << std::endl;
+        return NULL;
+    } else {
+        json jsonResponse = json::parse(rewardsResponse.text);
+        return jsonResponse["data"];
+    }
+    return NULL;
+}
+
+void TwitchClient::updateCustomReward(const std::string& reward_id, const std::string& title, const std::string& prompt, int cost, bool is_enabled) {
+    // Обновление кастомной награды
+    if (broadcast_id.empty()) {
+        getBroadcastInfo();
+    }
+    json body = {
+        {"title", title},
+        {"prompt", prompt},
+        {"cost", cost},
+        {"is_enabled", is_enabled},
+    };
+
+    cpr::Response updateResponse = cpr::Patch(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
+                                              cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
+                                              cpr::Body{body.dump()},
+                                              cpr::Parameters{{"broadcaster_id", broadcast_id}, {"id", reward_id}});
+
+    if (updateResponse.status_code == 401) {
+        updateAccessToken();
+        this->updateCustomReward(reward_id, title, prompt, cost, is_enabled);
+    } else if (updateResponse.status_code != 200) {
+        std::cerr << "Error updating custom reward: " << updateResponse.status_code << " - " << updateResponse.text << std::endl;
+    } else {
+        // Успешно обновлено
+    }
+}
+#pragma endregion

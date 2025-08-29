@@ -31,14 +31,7 @@ public:
     json AvailableModelsRequest();       // Доступные модели
     json CurrentModelRequest();          // Текущая модель
 
-    // Управления подписками
-    bool Subscribe();
-    bool unSubscribe();
-
-
 private:
-    void do_read();
-
     // Boost.Asio и Boost.Beast объекты для HTTP-запросов
     asio::io_context ioc;
     asio::ip::tcp::resolver resolver{ioc};
@@ -57,14 +50,27 @@ public:
     ~TwitchClient();
 
     void getAccessToken();
+    void updateAccessToken();
+
+    json getBroadcastInfo(); // Получение информации о пользователе
+
+    json getCustomRewards(); // Получение кастомных наград
+    void updateCustomReward(const std::string& reward_id, const std::string& title, const std::string& prompt, int cost, bool is_enabled); // Обновление кастомной награды
+
+
 
 
 private:
-    std::string client_id = "x4h6z4f3b1z8y3b5z1y9r0n2f5w8a1";
-    std::string client_secret = "8271hcy8jff62wv4w4btgo3mxkqgb2";
-    std::string redirect_uri = "https://localhost:30101/callback";
-    std::string scope = "channel:manage:polls channel:read:polls";
+    std::string client_id = "bt1iiov5efszxf1dbgcs2rq7gvvfdy";
+    std::string client_secret = "t0yfrmyozsgy44abn1e6bhhppp7a26";
+    std::string redirect_uri = "http://localhost:30101/callback";
+    std::string scope = "channel:manage:redemptions+channel:read:redemptions";
     std::string auth_url = "https://id.twitch.tv/oauth2/authorize";
-    std::string token;
+
+    std::string code;
+    std::string RefreshToken;
+    std::string AccessToken;
+    std::string broadcast_id;
+
 
 };
