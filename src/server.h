@@ -32,6 +32,7 @@ public:
     json addNewReward(const Reward& reward);
     json addNewModel(const std::string& modelID);
 
+    void twitchvts();
 
     void run();
     void stop();
@@ -43,4 +44,5 @@ private:
     // Объекты стороних клиентов
     VTSClient& vtsClient_;
     TwitchClient& twitchClient_;
+    std::string currentModelID; 
 };

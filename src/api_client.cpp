@@ -310,12 +310,12 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
         getBroadcastInfo();
     }
     json body = {
-        {"is_enabled", is_enabled},
+        {"is_enabled", is_enabled}
     };
 
     cpr::Response updateResponse = cpr::Patch(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
                                               cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
-                                              cpr::Body{body.dump()},
+                                              cpr::Body{body.dump(4)},
                                               cpr::Parameters{{"broadcaster_id", broadcast_id}, {"id", reward_id}});
 
     if (updateResponse.status_code == 401) {
