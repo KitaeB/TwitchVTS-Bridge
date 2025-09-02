@@ -10,14 +10,21 @@
 #include "api_client.h"
 
 /*
-    Алгоритм:
-        
+Алгоритмы:
+
+    1 Main. Polling VtubeStudio для определения текущей модели -> [Обновлена модель] -> Чтение json файла с настройками -> для наград с флагом is_vts_reward сформировать updateReward()
+    2 Create. POST на создание reward -> [status code 200] -> Считывание json -> пробежались по всем моделям, для каждой добавили награду, с is_enabled = false
+    3 addModel. На сервере кнопка обновить -> Считываю список моделей -> Считываю json -> Добавляю отсутствующие модели
+    4 updateRewardsList. POST на сохранения -> [Сохраняю json {Model. Rewards[]}] -> Считываю json -> ищу в json файле Model -> обновляю rewards
 
 */
 
 /* TODO
 
-    1. 
+    1. Изменить запрос с ModelID на ModelName, поскольку ModelID изменчив   +++ (нужно проверить)
+    2. Для алгоритма addModel, добавить API endpoint
+    3. Изменить запрос списка моделей, добавить фильтр, для определения только тех моделей, которыми я могу управлять ++ (нужно проверить)
+    4. Добавить API endpoint POST, для обновления списка наград у модели
     
 */
 
@@ -67,7 +74,7 @@ void Server::serverAPI() {
 
     // Запрос структуры json
     CROW_ROUTE(app, "/model/list/reward").methods(crow::HTTPMethod::GET)([this](const crow::request& req) {
-        auto modelID = req.url_params.get("modelID");
+        auto modelName = req.url_params.get("modelName");
         // Читаем список наград по моделям
         json fileContent;
         std::ifstream file("ModelRewards.json");
@@ -77,11 +84,11 @@ void Server::serverAPI() {
         } else {
             fileContent = createJsonFile();
         }
-        if (!modelID) {  // Возвращаем абсолютно все награды
+        if (!modelName) {  // Возвращаем абсолютно все награды
             return crow::response(200, fileContent.dump(4));
         } else {
             // Ищем модель с таким же id и возвращаем её
-            auto it = std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) { return entry["model"]["modelID"] == modelID; });
+            auto it = std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) { return entry["model"]["modelName"] == modelName; });
             if (it != fileContent.end()) {
                 return crow::response(200, it->dump(4));
             } else {
@@ -108,13 +115,11 @@ json Server::createJsonFile() {
             modelRewards["prompt"] = reward["prompt"];
             modelRewards["cost"] = reward["cost"];
             modelRewards["is_enabled"] = reward["is_enabled"];
-            modelRewards["is_vts_reward"] = false;
 
             allRewards.push_back(modelRewards);
         }
         for (const json model : Models) {
-            json modelj = {{"modelName", model["modelName"]}, {"modelID", model["modelID"]}};
-            fileContent.push_back({{"model", modelj}, {"Rewards", allRewards}});
+            fileContent.push_back({{"Model", model["modelName"]}, {"Rewards", allRewards}});
         }
         std::ofstream outFile("ModelRewards.json");
         outFile << fileContent.dump(4);  // Красивый отступ в 4 пробела
@@ -136,7 +141,7 @@ json Server::updateModelRewards(const json& model, const json& rewards) {
         file.close();
         // Ищем модель с таким же id
         auto it =
-            std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) { return entry["model"]["modelID"] == model["modelID"]; });
+            std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) { return entry["model"]["modelName"] == model["modelName"]; });
         // Если при поиске мы не дошли до конца списка, т.е. нашли модель, обеовляем её награды
         if (it != fileContent.end()) {
             (*it)["Rewards"] = rewards;
@@ -158,23 +163,21 @@ json Server::updateModelRewards(const json& model, const json& rewards) {
 }
 
 void Server::twitchvts() {
-    std::string readModelID = vtsClient_.CurrentModelRequest()["modelID"];
-    std::cout << "Real Model : " << readModelID << ", Old model: " << currentModelID<< std::endl;
-    if (currentModelID.empty() || currentModelID != readModelID) {
-        currentModelID = readModelID;
+    std::string readModelName = vtsClient_.CurrentModelRequest()["modelName"];
+    std::cout << "Real Model : " << readModelName << ", Old model: " << currentModelName<< std::endl;
+    if (currentModelName.empty() || currentModelName != readModelName) {
+        currentModelName = readModelName;
 
         // Читаем json Файл
         json ModelRewars = createJsonFile();
 
         // Ищем модель с таким же id
         auto it =
-            std::find_if(ModelRewars.begin(), ModelRewars.end(), [&](const json& entry) { return entry["model"]["modelID"] == currentModelID; });
+            std::find_if(ModelRewars.begin(), ModelRewars.end(), [&](const json& entry) { return entry["model"]["modelName"] == currentModelName; });
         // Если мы нашли модели в файле
         if (it != ModelRewars.end()) {
             for (json reward : (*it)["Rewards"]) {
-                if (reward["is_vts_reward"]) {
-                    twitchClient_.updateCustomReward(reward["id"], reward["title"], reward["prompt"], reward["cost"], reward["is_enabled"]);
-                }
+                twitchClient_.updateCustomReward(reward["id"], reward["title"], reward["prompt"], reward["cost"], reward["is_enabled"]);
             }
         }
     }

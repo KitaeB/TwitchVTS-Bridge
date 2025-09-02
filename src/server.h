@@ -44,5 +44,5 @@ private:
     // Объекты стороних клиентов
     VTSClient& vtsClient_;
     TwitchClient& twitchClient_;
-    std::string currentModelID; 
+    std::string currentModelName; 
 };
