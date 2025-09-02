@@ -1,9 +1,25 @@
 #include "server.h"
+#include <crow/http_request.h>
+#include <crow/http_response.h>
+#include <crow/json.h>
+#include <crow/logging.h>
 #include <curl/curl.h>
 #include <algorithm>
 #include <fstream>
 #include <ostream>
 #include "api_client.h"
+
+/*
+    Алгоритм:
+        
+
+*/
+
+/* TODO
+
+    1. 
+    
+*/
 
 Server::Server(int port, VTSClient& vtsClient, TwitchClient& twitchClient) : port(port), vtsClient_(vtsClient), twitchClient_(twitchClient) {
     CROW_ROUTE(app, "/")([]() {
@@ -35,6 +51,18 @@ void Server::serverAPI() {
             x["models"].push_back(model);
         }
         return crow::response(200, x.dump(4));
+    });
+
+    // Запрос на создание новой награды за баллы
+    CROW_ROUTE(app, "/reward/create").methods(crow::HTTPMethod::POST)([this](const crow::request& req) {
+        json param = json::parse(req.body);
+
+        if (param.contains("title")) {
+            twitchClient_.createReward(param);
+        } else {
+            return crow::response(405, "Request body not include title");
+        }
+        return crow::response(200,"ok");
     });
 
     // Запрос структуры json
