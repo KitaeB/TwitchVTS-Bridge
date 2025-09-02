@@ -1,5 +1,8 @@
 #include "api_client.h"
 
+#include <cpr/api.h>
+#include <cpr/cprtypes.h>
+#include <cpr/response.h>
 #include <shellapi.h>
 
 #include <string>
@@ -199,8 +202,8 @@ void TwitchClient::getAccessToken() {
     std::thread server_thread([&]() { srv.listen("localhost", 30101); });
 
     // Открываем браузер для авторизации
-    std::string auth_url = "https://id.twitch.tv/oauth2/authorize?client_id=" + client_id + "&redirect_uri=" + redirect_uri +
-                           "&response_type=code&scope=" + scope;
+    std::string auth_url =
+        "https://id.twitch.tv/oauth2/authorize?client_id=" + client_id + "&redirect_uri=" + redirect_uri + "&response_type=code&scope=" + scope;
 #if defined(_WIN32)
     ShellExecuteA(NULL, "open", auth_url.c_str(), NULL, NULL, SW_SHOWNORMAL);
 #endif
@@ -289,8 +292,8 @@ json TwitchClient::getCustomRewards() {
         getBroadcastInfo();
     }
     cpr::Response rewardsResponse = cpr::Get(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
-                                            cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}},
-                                            cpr::Parameters{{"broadcaster_id", broadcast_id}});
+                                             cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}},
+                                             cpr::Parameters{{"broadcaster_id", broadcast_id}});
     if (rewardsResponse.status_code == 401) {
         updateAccessToken();
         this->getCustomRewards();
@@ -309,14 +312,12 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
     if (broadcast_id.empty()) {
         getBroadcastInfo();
     }
-    json body = {
-        {"is_enabled", is_enabled}
-    };
+    json body = {{"is_enabled", is_enabled}};
 
-    cpr::Response updateResponse = cpr::Patch(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
-                                              cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
-                                              cpr::Body{body.dump(4)},
-                                              cpr::Parameters{{"broadcaster_id", broadcast_id}, {"id", reward_id}});
+    cpr::Response updateResponse =
+        cpr::Patch(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
+                   cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
+                   cpr::Body{body.dump(4)}, cpr::Parameters{{"broadcaster_id", broadcast_id}, {"id", reward_id}});
 
     if (updateResponse.status_code == 401) {
         updateAccessToken();
@@ -327,4 +328,39 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
         // Успешно обновлено
     }
 }
+
+void TwitchClient::createReward(json param) {
+    // Обновление кастомной награды
+    if (broadcast_id.empty()) {
+        getBroadcastInfo();
+    }
+
+    json body = {{"title", param.value("title", "title_empty")},
+                 {"cost", param.value("cost", 100)},
+                 {"prompt", param.value("prompt", "")},
+                 {"is_enabled", param.value("is_enabled", true)},
+                 {"background_color", param.value("background_color", "#9147FF")},
+                 {"is_user_input_required", param.value("is_user_input_required", false)},
+                 {"is_max_per_stream_enabled", param.value("is_max_per_stream_enabled", false)},
+                 {"max_per_stream", param.value("max_per_stream", 1)},
+                 {"is_max_per_user_per_stream_enabled", param.value("is_max_per_user_per_stream_enabled", false)},
+                 {"max_per_user_per_stream", param.value("max_per_user_per_stream", 1)},
+                 {"is_global_cooldown_enabled", param.value("is_global_cooldown_enabled", false)},
+                 {"global_cooldown_seconds", param.value("global_cooldown_seconds", 60)},
+                 {"should_redemptions_skip_request_queue", param.value("should_redemptions_skip_request_queue", false)}};
+    cpr::Response createResponse =
+        cpr::Post(cpr::Url("https://api.twitch.tv/helix/channel_points/custom_rewards"),
+                   cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
+                   cpr::Body{body.dump(4)}, cpr::Parameters{{"broadcaster_id", broadcast_id}});
+
+    if (createResponse.status_code == 401) {
+        updateAccessToken();
+        this->createReward(param);
+    } else if (createResponse.status_code != 200) {
+        std::cerr << "Error creating custom reward: " << createResponse.status_code << " - " << createResponse.text << std::endl;
+    } else {
+        // Успешно обновлено
+    }
+}
+
 #pragma endregion
