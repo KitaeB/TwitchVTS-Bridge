@@ -2,6 +2,8 @@
 
 #include <cpr/api.h>
 #include <cpr/cprtypes.h>
+#include <cpr/curl_container.h>
+#include <cpr/parameters.h>
 #include <cpr/response.h>
 #include <shellapi.h>
 
@@ -185,17 +187,22 @@ void TwitchClient::getAccessToken() {
                         <meta charset="UTF-8">
                     </head>
                     <body>
-                        <p>Вы успешно авторизованы! Окно закроется через 3 секунды.</p>
+                        <p>Вы успешно авторизованы! Окно закроется через 5 секунд.</p>
                         <script>
                             setTimeout(function() {
                                 window.close();
-                            }, 3000);
+                            }, 5000);
                         </script>
                     </body>
                     </html>
                 )";
         res.set_header("Content-Type", "text/html; charset=UTF-8");
         res.set_content(html, "text/html");
+
+        std::string auth_url = "http://localhost:801";
+        #if defined(_WIN32)
+            ShellExecuteA(NULL, "open", auth_url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        #endif
         srv.stop();  // останавливаем сервер
     });
     // Запускаем сервер в отдельном потоке
@@ -293,7 +300,7 @@ json TwitchClient::getCustomRewards() {
     }
     cpr::Response rewardsResponse = cpr::Get(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
                                              cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}},
-                                             cpr::Parameters{{"broadcaster_id", broadcast_id}});
+                                             cpr::Parameters{{"broadcaster_id", broadcast_id}, {"only_manageable_rewards", "true"}});
     if (rewardsResponse.status_code == 401) {
         updateAccessToken();
         this->getCustomRewards();
