@@ -23,10 +23,9 @@ int main(int argc, char** argv) {
 
             // Start the server
             Server server(801, vtsClient, twitchClient);
-            //server.run();
+            server.run();
             
             while (true) {
-                server.twitchvts();
                 std::this_thread::sleep_for(std::chrono::seconds(20));
             }
         } catch (const std::exception& e) {
