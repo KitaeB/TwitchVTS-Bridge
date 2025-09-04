@@ -13,6 +13,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Boost REQUIRED COMPONENTS system asio beast)
 find_package(cpr CONFIG REQUIRED)
+find_package(nlohmann_json)
+find_package(httplib)
+find_package(crow)
+find_package(cpr)
 
 add_executable(TwitchVTS src/main.cpp src/server.cpp src/api_client.cpp)
 
