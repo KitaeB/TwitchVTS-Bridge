@@ -375,6 +375,7 @@ json TwitchClient::createReward(json param) {
             
         }
     }
+    return NULL;
 }
 
 #pragma endregion
