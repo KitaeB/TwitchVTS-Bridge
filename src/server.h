@@ -27,8 +27,8 @@ public:
     Server(int port, VTSClient& vtsClient, TwitchClient& twitchClient);
     ~Server();
 
-    json createJsonFile();
-    json updateModelRewards(const json& modelID, const json& rewards);
+    json openModelRewards();
+    json updateModelRewards(const std::string& modelName, const json& rewards);
     json addNewReward(const Reward& reward);
     json addNewModel(const std::string& modelID);
 
