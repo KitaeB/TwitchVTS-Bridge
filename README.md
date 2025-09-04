@@ -1,53 +1,49 @@
 # TwitchVTS-Bridge
 
-## Описание
-Этот проект представляет собой мост между **VTube Studio** и **Twitch**, позволяющий синхронизировать кастомные награды (Channel Points Rewards) с моделями в VTube Studio.
+**TwitchVTS-Bridge** — это приложение для интеграции VTube Studio и Twitch, позволяющее управлять моделями VTube Studio и пользовательскими наградами за очки канала Twitch через HTTP-сервер. Проект предоставляет удобный API для взаимодействия с моделями и наградами, обеспечивая автоматизацию и гибкость в управлении.
 
----
+## Основные возможности
 
-## 📌 Файл: server.cpp
+- **Интеграция с VTube Studio**: Получение списка моделей, текущей модели и управление через WebSocket.
+- **Интеграция с Twitch**: Создание, обновление и управление наградами за очки канала через Twitch API.
+- **HTTP-сервер**: На базе фреймворка Crow, предоставляет API-эндпоинты для взаимодействия с моделями и наградами.
+- **Управление наградами**: Хранение и обновление наград для каждой модели в `ModelRewards.json`.
+- **Автоматическое обновление**: Синхронизация наград Twitch при смене модели в VTube Studio.
 
-### Класс `Server`
-- **Server::Server(...)** – конструктор, запускает веб-сервер на основе Crow, регистрирует роуты и создаёт JSON-файл с моделью и наградами.  
-- **Server::~Server()** – деструктор, останавливает сервер.  
-- **Server::run()** – запускает сервер на указанном порту.  
-- **Server::stop()** – останавливает сервер.  
-- **Server::serverAPI()** – регистрирует API-эндпоинты:  
-  - `/model/list` – список доступных моделей из VTubeStudio.  
-  - `/reward/create` – создание новой Twitch-награды.  
-  - `/model/list/reward` – возвращает награды для всех моделей или конкретной.  
-  - `/model/update` – обновляет список моделей и их наград.  
-- **Server::createJsonFile()** – создаёт (или загружает) файл `ModelRewards.json`. В него кладутся все модели с их наградами.  
-- **Server::updateModelRewards(model, rewards)** – обновляет награды у конкретной модели в `ModelRewards.json`. Если модель не найдена, добавляет новую.  
-- **Server::twitchvts()** – следит за сменой модели в VTubeStudio и обновляет награды на Twitch в соответствии с сохранёнными настройками.  
+## Требования
 
----
+- **C++**: Совместимость с современными компиляторами (C++17 и выше).
+- **Зависимости**:
+  - [Crow](https://github.com/CrowCpp/Crow) для HTTP-сервера.
+  - [Boost.Beast](https://www.boost.org/doc/libs/release/libs/beast/) для WebSocket.
+  - Библиотека для упрощённых запросов CURL [cpr](https://github.com/libcpr/cpr).
+  - Библиотека JSON [nlohmann/json](https://github.com/nlohmann/json).
+  - Библиотека для HTTP запросов [httplib](https://github.com/yhirose/cpp-httplib).
+- **VTube Studio**: Установленное приложение с активным WebSocket API.
+- **Twitch**: Аккаунт с настроенными наградами за очки канала и OAuth-токеном.
 
-## 📌 Файл: api_client.cpp
+## API-эндпоинты
 
-### 🔹 Класс `VTSClient` (работа с VTubeStudio API через WebSocket)
-- **VTSClient::VTSClient()** – конструктор, подключается к VTS, обрабатывает аутентификацию и токены.  
-- **VTSClient::~VTSClient()** – деструктор, закрывает соединение.  
-- **VTSClient::setPort / setHost** – настройка подключения.  
-- **VTSClient::ApiStateRequest()** – запрос состояния API VTubeStudio.  
-- **VTSClient::AuthenticationTokenRequest()** – получение нового токена аутентификации.  
-- **VTSClient::AuthenticateRequest(token)** – проверка валидности токена.  
-- **VTSClient::AvailableModelsRequest()** – запрос доступных моделей.  
-- **VTSClient::CurrentModelRequest()** – запрос информации о текущей модели.  
+Сервер предоставляет следующие API-эндпоинты:
 
-### 🔹 Класс `TwitchClient` (работа с Twitch API)
-- **TwitchClient::TwitchClient()** – конструктор, загружает refresh-токен из файла или получает новый.  
-- **TwitchClient::~TwitchClient()** – деструктор (пустой).  
-- **TwitchClient::getAccessToken()** – OAuth-авторизация через браузер, получение Access/Refresh токена.  
-- **TwitchClient::updateAccessToken()** – обновление Access токена с помощью Refresh токена.  
-- **TwitchClient::getBroadcastInfo()** – получение информации о канале (ID стримера и др.).  
-- **TwitchClient::getCustomRewards()** – список пользовательских наград Twitch.  
-- **TwitchClient::updateCustomReward(...)** – обновление параметров награды (стоимость, включение/выключение и т.п.).  
-- **TwitchClient::createReward(json param)** – создание новой награды на Twitch.  
+- **GET `/`**: Возвращает статическую HTML-страницу (`static/server.html`).
+- **GET `/status`**: Проверяет состояние сервера (возвращает `"OK"`).
+- **GET `/model/list`**: Возвращает список моделей из VTube Studio.
+- **GET `/model/list/reward?modelName=<name>`**: Возвращает награды для указанной модели или всех моделей.
+- **GET `/model/list/update`**: Обновляет `ModelRewards.json` новыми моделями.
+- **POST `/reward/create`**: Создаёт новую награду Twitch и добавляет её ко всем моделям.
+- **PUT `/reward/update`**: Обновляет награды для указанной модели.
 
----
+## Структура проекта
 
-## 🚀 Итог
-- `server.cpp` — отвечает за веб-сервер и взаимодействие между JSON-настройками, Twitch и VTube Studio.  
-- `api_client.cpp` — реализует клиентов для работы с **VTube Studio API** и **Twitch API**.  
+- **Server**: Управляет HTTP-сервером, маршрутами и API-эндпоинтами.
+- **VTSClient**: Обеспечивает взаимодействие с VTube Studio через WebSocket.
+- **TwitchClient**: Управляет запросами к Twitch API для работы с наградами.
+- **ModelRewards.json**: Хранит информацию о моделях и связанных с ними наградах.
 
+## Пример использования
+
+1. Запустите приложение и подключитесь к VTube Studio.
+2. Авторизуйтесь через Twitch OAuth для получения токена доступа.
+3. Через поднятый Web сервер (http://localhost:801) произвести настройки сочетания model -> reward
+4. При смене модели в VTube Studio награды Twitch автоматически обновятся.
