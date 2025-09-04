@@ -52,7 +52,7 @@ public:
 
     void getAccessToken();
     void updateAccessToken();
-    void createReward(json param);
+    json createReward(json param);
 
     json getBroadcastInfo(); // Получение информации о пользователе
 

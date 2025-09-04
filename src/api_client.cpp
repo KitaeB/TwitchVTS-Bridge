@@ -7,6 +7,7 @@
 #include <cpr/response.h>
 #include <shellapi.h>
 
+#include <exception>
 #include <string>
 #include <iostream>
 #include <fstream>
@@ -200,9 +201,9 @@ void TwitchClient::getAccessToken() {
         res.set_content(html, "text/html");
 
         std::string auth_url = "http://localhost:801";
-        #if defined(_WIN32)
-            ShellExecuteA(NULL, "open", auth_url.c_str(), NULL, NULL, SW_SHOWNORMAL);
-        #endif
+#if defined(_WIN32)
+        ShellExecuteA(NULL, "open", auth_url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+#endif
         srv.stop();  // останавливаем сервер
     });
     // Запускаем сервер в отдельном потоке
@@ -319,7 +320,7 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
     if (broadcast_id.empty()) {
         getBroadcastInfo();
     }
-    json body = {{"is_enabled", is_enabled}};
+    json body = {{"title", title}, {"prompt", prompt},{"cost", cost},{"is_enabled", is_enabled} };
 
     cpr::Response updateResponse =
         cpr::Patch(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
@@ -336,7 +337,7 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
     }
 }
 
-void TwitchClient::createReward(json param) {
+json TwitchClient::createReward(json param) {
     // Обновление кастомной награды
     if (broadcast_id.empty()) {
         getBroadcastInfo();
@@ -345,7 +346,7 @@ void TwitchClient::createReward(json param) {
     json body = {{"title", param.value("title", "title_empty")},
                  {"cost", param.value("cost", 100)},
                  {"prompt", param.value("prompt", "")},
-                 {"is_enabled", param.value("is_enabled", true)},
+                 {"is_enabled", param.value("is_enabled", false)},
                  {"background_color", param.value("background_color", "#9147FF")},
                  {"is_user_input_required", param.value("is_user_input_required", false)},
                  {"is_max_per_stream_enabled", param.value("is_max_per_stream_enabled", false)},
@@ -355,10 +356,11 @@ void TwitchClient::createReward(json param) {
                  {"is_global_cooldown_enabled", param.value("is_global_cooldown_enabled", false)},
                  {"global_cooldown_seconds", param.value("global_cooldown_seconds", 60)},
                  {"should_redemptions_skip_request_queue", param.value("should_redemptions_skip_request_queue", false)}};
+
     cpr::Response createResponse =
         cpr::Post(cpr::Url("https://api.twitch.tv/helix/channel_points/custom_rewards"),
-                   cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
-                   cpr::Body{body.dump(4)}, cpr::Parameters{{"broadcaster_id", broadcast_id}});
+                  cpr::Header{{"Authorization", "Bearer " + AccessToken}, {"Client-ID", client_id}, {"Content-Type", "application/json"}},
+                  cpr::Body{body.dump(4)}, cpr::Parameters{{"broadcaster_id", broadcast_id}});
 
     if (createResponse.status_code == 401) {
         updateAccessToken();
@@ -366,7 +368,12 @@ void TwitchClient::createReward(json param) {
     } else if (createResponse.status_code != 200) {
         std::cerr << "Error creating custom reward: " << createResponse.status_code << " - " << createResponse.text << std::endl;
     } else {
-        // Успешно обновлено
+        try {
+            json parse = json::parse(createResponse.text);
+            return parse;
+        } catch (std::exception ex) {
+            
+        }
     }
 }
 
