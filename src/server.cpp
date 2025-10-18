@@ -1,5 +1,4 @@
 #include "server.h"
-#include <basetsd.h>
 #include <crow/app.h>
 #include <crow/common.h>
 #include <crow/http_request.h>
@@ -11,6 +10,7 @@
 #include <fstream>
 #include <ostream>
 #include <string>
+#include <unordered_set> // добавлено
 #include "api_client.h"
 
 /*
@@ -39,30 +39,44 @@ INFO:
 
 */
 
-Server::Server(int port, VTSClient& vtsClient, TwitchClient& twitchClient) : port(port), vtsClient_(vtsClient), twitchClient_(twitchClient) {
+Server::Server(VTSClient& vtsClient, TwitchClient& twitchClient) : vtsClient_(vtsClient), twitchClient_(twitchClient) {
     CROW_ROUTE(app, "/")([]() {
         std::ifstream file("static/server.html");
         std::stringstream buffer;
         buffer << file.rdbuf();
         return buffer.str();
     });
-
+    
+    // Запрос на статус работы сервера
     CROW_ROUTE(app, "/status")([]() { return crow::response(200, "OK"); });
 
-    serverAPI();         // Обновляем список endpoint
-    openModelRewards();  // если отсутствует файл json modelRewards мы его создадим
+    // Обернём инициализацию в try/catch, чтобы ошибки сетевых запросов не крашили процесс
+    try {
+        serverAPI();         // Обновляем список endpoint
+        openModelRewards();  // если отсутствует файл json modelRewards мы его создадим
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Server init warning: " << e.what();
+        // продолжаем с возможным пустым файлом ModelRewards.json
+    }
 }
 
 Server::~Server() { app.stop(); }
 
-void Server::run() { app.port(port).concurrency(2).run(); }
+void Server::run() { app.port(port).run(); }
 
 void Server::stop() { app.stop(); }
 
 void Server::serverAPI() {
+    
     // Запрос списка моделей
     CROW_ROUTE(app, "/model/list").methods(crow::HTTPMethod::GET)([this]() {
-        json models = vtsClient_.AvailableModelsRequest();
+        json models;
+        try {
+            models = vtsClient_.AvailableModelsRequest();
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "AvailableModelsRequest failed: " << e.what();
+            models = json::array();
+        }
         json x;
         x["models"] = json::array();
         for (const auto& model : models) {
@@ -78,7 +92,11 @@ void Server::serverAPI() {
         json fileContent;
         std::ifstream file("ModelRewards.json");
         if (file.is_open()) {
-            file >> fileContent;
+            try {
+                file >> fileContent;
+            } catch (...) {
+                fileContent = json::array();
+            }
             file.close();
         } else {
             fileContent = openModelRewards();
@@ -86,9 +104,10 @@ void Server::serverAPI() {
         if (!modelName) {  // Возвращаем абсолютно все награды
             return crow::response(200, fileContent.dump(4));
         } else {
-            // Ищем модель с таким же id и возвращаем её
-            auto it =
-                std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) { return entry["model"]["modelName"] == modelName; });
+            // Ищем модель с таким же именем и возвращаем её
+            auto it = std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) {
+                return entry.contains("modelName") && entry["modelName"] == modelName;
+            });
             if (it != fileContent.end()) {
                 return crow::response(200, it->dump(4));
             } else {
@@ -99,35 +118,56 @@ void Server::serverAPI() {
 
     // Обновить список моделей ( после добавления новой модели в VtubeStudio )
     CROW_ROUTE(app, "/model/list/update").methods(crow::HTTPMethod::GET)([this]() {
-        // Запросим список моделей с VTube Studio
-        json modelList = vtsClient_.AvailableModelsRequest();
+        json modelList;
+        try {
+            modelList = vtsClient_.AvailableModelsRequest();
+        } catch (const std::exception& e) {
+            return crow::response(500, std::string("VtubeStudio request failed: ") + e.what());
+        }
         if (modelList.empty()) return crow::response(500, "VtubeStudio return empty list");
 
-        // Прочитаем файл с modelReward
+        // Прочитаем/создадим файл с modelReward
         json fileContent;
-        // Откроем файл с json modelRewards
         std::ifstream file("ModelRewards.json");
         if (file.is_open()) {
-            // Прочитаем файл и закроем его
-            file >> fileContent;
+            try {
+                file >> fileContent;
+            } catch (...) {
+                fileContent = json::array();
+            }
             file.close();
         } else {
             fileContent = openModelRewards();
-            // Создадим список имеющихся моделей
-            std::unordered_set<std::string> modelNames;
-            for (json model : fileContent) {
-                modelNames.insert(model["modelName"].get<std::string>());
-            }
+        }
 
-            // Пробежимся по списку моделей прочитанных по api
-            for (json model : modelList) {
-                if (modelNames.find(model["modelName"]) == modelNames.end()) {
-                    // Если модель не нашлась, добавим её
-                    fileContent = updateModelRewards(model["modelName"], fileContent[0]["Rewards"]);
-                }
+        // Создадим множество существующих имён
+        std::unordered_set<std::string> modelNames;
+        for (const json& entry : fileContent) {
+            if (entry.contains("modelName") && entry["modelName"].is_string()) {
+                modelNames.insert(entry["modelName"].get<std::string>());
             }
         }
-        return crow::response(crow::OK, fileContent, );
+
+        // Добавим отсутствующие модели с пустым списком Rewards
+        for (const json& model : modelList) {
+            if (!model.contains("modelName")) continue;
+            std::string name = model["modelName"].get<std::string>();
+            if (modelNames.find(name) == modelNames.end()) {
+                fileContent.push_back({{"modelName", name}, {"Rewards", json::array()}});
+                modelNames.insert(name);
+            }
+        }
+
+        // Сохраним файл
+        try {
+            std::ofstream outFile("ModelRewards.json");
+            outFile << fileContent.dump(4);
+            outFile.close();
+        } catch (...) {
+            CROW_LOG_ERROR << "Failed to write ModelRewards.json";
+        }
+
+        return crow::response(200, fileContent.dump(4));
     });
 
     // Запрос на создание новой награды за баллы
@@ -146,18 +186,15 @@ void Server::serverAPI() {
         reward.prompt = newReward["prompt"];
         reward.cost = newReward["cost"];
         reward.is_enabled = newReward["is_enabled"];
-        // Выше залупный код, т.к. в функции я его обратно в json преобразую
         json fileContent = addNewReward(reward);
 
-        return crow::response(200, fileContent);
+        return crow::response(200, fileContent.dump(4));
     });
 
     // Запрос на обновление наград у модели
     CROW_ROUTE(app, "/reward/update").methods(crow::HTTPMethod::PUT)([this](const crow::request& req) {
-        // json в req должен содержать modelName и Rewards
         json modelRewards = json::parse(req.body);
         if (!(modelRewards.contains("modelName") && modelRewards.contains("Rewards"))) {
-            // Если не содержит, выводим ошибку
             return crow::response(405, "Json request must contain modelName and Rewards{id, title, prompt, cost, is_enabled} ");
         } else {
             updateModelRewards(modelRewards["modelName"], modelRewards["Rewards"]);
@@ -171,28 +208,47 @@ json Server::openModelRewards() {
     json fileContent = json::array();
     std::ifstream file("ModelRewards.json");
     if (!file.is_open()) {
-        // Заполнение файла начальными данными
-        json Models = vtsClient_.AvailableModelsRequest();
-        json Rewards = twitchClient_.getCustomRewards();
+        // Заполнение файла начальными данными (без аварий при ошибках)
+        json Models;
+        json Rewards;
+        try {
+            Models = vtsClient_.AvailableModelsRequest();
+        } catch (...) {
+            Models = json::array();
+        }
+        try {
+            Rewards = twitchClient_.getCustomRewards();
+        } catch (...) {
+            Rewards = json::array();
+        }
 
-        json allRewards;
-        for (const json reward : Rewards) {
+        json allRewards = json::array();
+        for (const json& reward : Rewards) {
             json modelRewards;
-            modelRewards["id"] = reward["id"];
-            modelRewards["title"] = reward["title"];
-            modelRewards["prompt"] = reward["prompt"];
-            modelRewards["cost"] = reward["cost"];
-            modelRewards["is_enabled"] = reward["is_enabled"];
-
+            if (reward.contains("id")) modelRewards["id"] = reward["id"];
+            if (reward.contains("title")) modelRewards["title"] = reward["title"];
+            if (reward.contains("prompt")) modelRewards["prompt"] = reward["prompt"];
+            if (reward.contains("cost")) modelRewards["cost"] = reward["cost"];
+            if (reward.contains("is_enabled")) modelRewards["is_enabled"] = reward["is_enabled"];
             allRewards.push_back(modelRewards);
         }
-        for (const json model : Models) {
-            fileContent.push_back({{"Model", model["modelName"]}, {"Rewards", allRewards}});
+        for (const json& model : Models) {
+            if (model.contains("modelName"))
+                fileContent.push_back({{"modelName", model["modelName"]}, {"Rewards", allRewards}});
         }
-        std::ofstream outFile("ModelRewards.json");
-        outFile << fileContent.dump(4);  // Красивый отступ в 4 пробела
+        try {
+            std::ofstream outFile("ModelRewards.json");
+            outFile << fileContent.dump(4);
+            outFile.close();
+        } catch (...) {
+            CROW_LOG_ERROR << "Failed to create ModelRewards.json";
+        }
     } else {
-        file >> fileContent;
+        try {
+            file >> fileContent;
+        } catch (...) {
+            fileContent = json::array();
+        }
         file.close();
     }
     return fileContent;
@@ -201,31 +257,35 @@ json Server::openModelRewards() {
 // Обновление наград модели
 json Server::updateModelRewards(const std::string& modelName, const json& rewards) {
     json fileContent;
-    // Читаем существующий набор моделей
     std::ifstream file("ModelRewards.json");
 
     if (file.is_open()) {
-        file >> fileContent;
+        try {
+            file >> fileContent;
+        } catch (...) {
+            fileContent = json::array();
+        }
         file.close();
-        // Ищем модель с таким же id
-        auto it = std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) { return entry["model"]["modelName"] == modelName; });
 
-        // Если при поиске мы не дошли до конца списка, т.е. нашли модель, обеовляем её награды
+        auto it = std::find_if(fileContent.begin(), fileContent.end(), [&](const json& entry) {
+            return entry.contains("modelName") && entry["modelName"] == modelName;
+        });
+
         if (it != fileContent.end()) {
             (*it)["Rewards"] = rewards;
-        }
-        // Если при поиске мы дошли до конца списка, добавим новую модель
-        else {
-            fileContent.push_back({{"model", modelName}, {"Rewards", rewards}});
-        }
-        // Запишем обновления в файл
-        std::ofstream outFile("ModelRewards.json");
-        if (outFile.is_open()) {
-            outFile << fileContent.dump(4);
-            outFile.close();
+        } else {
+            fileContent.push_back({{"modelName", modelName}, {"Rewards", rewards}});
         }
 
-    } else {  // Если файла нет, создаём его
+        try {
+            std::ofstream outFile("ModelRewards.json");
+            outFile << fileContent.dump(4);
+            outFile.close();
+        } catch (...) {
+            CROW_LOG_ERROR << "Failed to write ModelRewards.json";
+        }
+
+    } else {
         fileContent = openModelRewards();
     }
     return fileContent;
@@ -233,14 +293,19 @@ json Server::updateModelRewards(const std::string& modelName, const json& reward
 
 // Добавление нового Reward в Json файл
 json Server::addNewReward(const Reward& reward) {
-    // Откроем и прочитаем файл
     json fileContent;
     std::ifstream file("ModelRewards.json");
     if (file.is_open()) {
-        file >> fileContent;
+        try {
+            file >> fileContent;
+        } catch (...) {
+            fileContent = json::array();
+        }
         file.close();
+    } else {
+        fileContent = openModelRewards();
     }
-    // Сформируем json из Reward
+
     json reward_json;
     reward_json["id"] = reward.id;
     reward_json["title"] = reward.title;
@@ -248,39 +313,56 @@ json Server::addNewReward(const Reward& reward) {
     reward_json["cost"] = reward.cost;
     reward_json["is_enabled"] = reward.is_enabled;
 
-    // Пройдёмся по всем моделям и добавим в каждую нашу модель
     for (json& model : fileContent) {
         if (model.contains("Rewards") && model["Rewards"].is_array()) {
             model["Rewards"].push_back(reward_json);
+        } else if (!model.contains("Rewards")) {
+            model["Rewards"] = json::array({reward_json});
         }
     }
 
-    // Запишем обновления в файл
-    std::ofstream outFile("ModelRewards.json");
-    if (outFile.is_open()) {
+    try {
+        std::ofstream outFile("ModelRewards.json");
         outFile << fileContent.dump(4);
         outFile.close();
+    } catch (...) {
+        CROW_LOG_ERROR << "Failed to write ModelRewards.json";
     }
 
     return fileContent;
 }
 
 void Server::twitchvts() {
-    std::string readModelName = vtsClient_.CurrentModelRequest()["modelName"];
+    json curModelJson;
+    try {
+        curModelJson = vtsClient_.CurrentModelRequest();
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "CurrentModelRequest failed: " << e.what();
+        return;
+    }
+    std::string readModelName;
+    if (curModelJson.contains("modelName") && curModelJson["modelName"].is_string())
+        readModelName = curModelJson["modelName"].get<std::string>();
+
     std::cout << "Real Model : " << readModelName << ", Old model: " << currentModelName << std::endl;
+    if (readModelName.empty()) return;
+
     if (currentModelName.empty() || currentModelName != readModelName) {
         currentModelName = readModelName;
 
-        // Читаем json Файл
-        json ModelRewars = openModelRewards();
+        json ModelRewards = openModelRewards();
 
-        // Ищем модель с таким же id
-        auto it =
-            std::find_if(ModelRewars.begin(), ModelRewars.end(), [&](const json& entry) { return entry["model"]["modelName"] == currentModelName; });
-        // Если мы нашли модели в файле
-        if (it != ModelRewars.end()) {
-            for (json reward : (*it)["Rewards"]) {
-                twitchClient_.updateCustomReward(reward["id"], reward["title"], reward["prompt"], reward["cost"], reward["is_enabled"]);
+        auto it = std::find_if(ModelRewards.begin(), ModelRewards.end(), [&](const json& entry) {
+            return entry.contains("modelName") && entry["modelName"] == currentModelName;
+        });
+
+        if (it != ModelRewards.end()) {
+            for (const json& reward : (*it)["Rewards"]) {
+                try {
+                    twitchClient_.updateCustomReward(reward["id"], reward["title"], reward["prompt"], reward["cost"], reward["is_enabled"]);
+                } catch (const std::exception& e) {
+                    CROW_LOG_ERROR << "updateCustomReward failed: " << e.what();
+                }
             }
         }
     }

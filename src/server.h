@@ -24,7 +24,7 @@ struct ModelRewards {
 
 class Server {
 public:
-    Server(int port, VTSClient& vtsClient, TwitchClient& twitchClient);
+    Server(VTSClient& vtsClient, TwitchClient& twitchClient);
     ~Server();
 
     json openModelRewards();
@@ -35,11 +35,12 @@ public:
     void twitchvts();
 
     void run();
+
     void stop();
 private:
     void serverAPI();
     crow::SimpleApp app;
-    int port = 801;
+    int port = 8010;
 
     // Объекты стороних клиентов
     VTSClient& vtsClient_;
