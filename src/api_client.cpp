@@ -1,10 +1,13 @@
 #include "api_client.h"
 
+#include <cpr/accept_encoding.h>
 #include <cpr/api.h>
 #include <cpr/cprtypes.h>
 #include <cpr/curl_container.h>
 #include <cpr/parameters.h>
+#include <cpr/payload.h>
 #include <cpr/response.h>
+#include <excpt.h>
 #include <shellapi.h>
 
 #include <exception>
@@ -16,7 +19,21 @@
 #pragma region VTS
 
 // Конструктор и деструктор клиента VTS
-VTSClient::VTSClient() {
+VTSClient::VTSClient() {}
+
+VTSClient::~VTSClient() {
+    // Деструктор
+    beast::error_code ec;
+    if (ws.is_open()) {
+        ws.close(beast::websocket::close_code::normal, ec);
+        if (ec) {
+            std::cerr << "Error closing WebSocket: " << ec.message() << std::endl;
+        }
+    }
+}
+
+// Функция для установления связи
+void VTSClient::connect() {
     auto results = resolver.resolve(host, std::to_string(port));
 
     basio::connect(ws.next_layer(), results);
@@ -28,7 +45,7 @@ VTSClient::VTSClient() {
     }
 
     // Проверим наличие токена аутентификации в файле
-    std::ifstream tokenFile("config");  // Файл для хранения токена
+    std::ifstream tokenFile("vts_config");  // Файл для хранения токена
     if (tokenFile.is_open()) {
         std::getline(tokenFile, token);
         tokenFile.close();
@@ -44,7 +61,7 @@ VTSClient::VTSClient() {
         }
 
         // Сохраним токен в файл
-        std::ofstream outFile("config");  // Файл для хранения токена
+        std::ofstream outFile("vts_config");  // Файл для хранения токена
         if (outFile.is_open()) {
             outFile << token;
             outFile.close();
@@ -52,16 +69,8 @@ VTSClient::VTSClient() {
     }
 }
 
-VTSClient::~VTSClient() {
-    // Деструктор
-    beast::error_code ec;
-    if (ws.is_open()) {
-        ws.close(beast::websocket::close_code::normal, ec);
-        if (ec) {
-            std::cerr << "Error closing WebSocket: " << ec.message() << std::endl;
-        }
-    }
-}
+// Проверяем состояние связи
+bool VTSClient::isConnected() { return ws.is_open(); }
 
 void VTSClient::setPort(int port) { this->port = port; }
 void VTSClient::setHost(const std::string& host) { this->host = host; }
@@ -207,7 +216,7 @@ void TwitchClient::getAccessToken() {
         srv.stop();  // останавливаем сервер
     });
     // Запускаем сервер в отдельном потоке
-    std::thread server_thread([&]() { srv.listen("localhost", 30101); });
+    std::thread server_thread([&]() { srv.listen("localhost", callback_port); });
 
     // Открываем браузер для авторизации
     std::string auth_url =
@@ -282,16 +291,16 @@ json TwitchClient::getBroadcastInfo() {
         updateAccessToken();
         this->getBroadcastInfo();
     } else if (userResponse.status_code != 200) {
-        return NULL;
+        return nullptr;
     } else {
         json jsonResponse = json::parse(userResponse.text);
         if (jsonResponse["data"].empty()) {
-            return NULL;
+            return nullptr;
         }
         broadcast_id = jsonResponse["data"][0]["id"];
         return jsonResponse["data"][0];
     }
-    return NULL;
+    return nullptr;
 }
 
 json TwitchClient::getCustomRewards() {
@@ -307,12 +316,12 @@ json TwitchClient::getCustomRewards() {
         this->getCustomRewards();
     } else if (rewardsResponse.status_code != 200) {
         std::cerr << "Error fetching custom rewards: " << rewardsResponse.status_code << " - " << rewardsResponse.text << std::endl;
-        return NULL;
+        return nullptr;
     } else {
         json jsonResponse = json::parse(rewardsResponse.text);
         return jsonResponse["data"];
     }
-    return NULL;
+    return nullptr;
 }
 
 void TwitchClient::updateCustomReward(const std::string& reward_id, const std::string& title, const std::string& prompt, int cost, bool is_enabled) {
@@ -320,7 +329,7 @@ void TwitchClient::updateCustomReward(const std::string& reward_id, const std::s
     if (broadcast_id.empty()) {
         getBroadcastInfo();
     }
-    json body = {{"title", title}, {"prompt", prompt},{"cost", cost},{"is_enabled", is_enabled} };
+    json body = {{"title", title}, {"prompt", prompt}, {"cost", cost}, {"is_enabled", is_enabled}};
 
     cpr::Response updateResponse =
         cpr::Patch(cpr::Url{"https://api.twitch.tv/helix/channel_points/custom_rewards"},
@@ -372,10 +381,179 @@ json TwitchClient::createReward(json param) {
             json parse = json::parse(createResponse.text);
             return parse;
         } catch (std::exception ex) {
-            
         }
     }
-    return NULL;
+    return nullptr;
+}
+
+#pragma endregion
+
+#pragma region DotationAlerts
+
+DonationAlertsClient::DonationAlertsClient() {
+    // Конструктор
+    // Читаем файл, если там есть access токен, то используем его
+    std::ifstream tokenFile("da_config");  // Файл для хранения токена
+    if (tokenFile.is_open()) {
+        std::getline(tokenFile, RefreshToken);
+        tokenFile.close();
+        // Обновляем Access Token
+        updateAccessToken();
+    } else {
+        // Иначе запрашиваем новый токен
+        getAccessToken();
+    }
+}
+
+DonationAlertsClient::~DonationAlertsClient() {
+    // Деструктор
+}
+
+void DonationAlertsClient::getAccessToken() {
+    // Запрос токена доступа (Access Token) у DA
+    httplib::Server srv;
+    srv.Get("/callback", [&](const httplib::Request& req, httplib::Response& res) {
+        code = req.get_param_value("code");
+        // HTML код для закрытия страницы
+        std::string html = R"(
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Authorization Complete</title>
+                        <meta charset="UTF-8">
+                    </head>
+                    <body>
+                        <p>Вы успешно авторизованы! Окно закроется через 5 секунд.</p>
+                        <script>
+                            setTimeout(function() {
+                                window.close();
+                            }, 5000);
+                        </script>
+                    </body>
+                    </html>
+                )";
+        res.set_header("Content-Type", "text/html; charset=UTF-8");
+        res.set_content(html, "text/html");
+
+        srv.stop();  // останавливаем сервер
+    });
+    // Запускаем сервер в отдельном потоке
+    std::thread server_thread([&]() { srv.listen("localhost", callback_port); });
+
+    // Открываем браузер для авторизации
+    std::string auth_url = "https://www.donationalerts.com/oauth/authorize?client_id=" + client_id + "&redirect_uri=" + redirect_uri +
+                           "&response_type=code&scope=oauth-donation-index";
+#if defined(_WIN32)
+    ShellExecuteA(NULL, "open", auth_url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+#endif
+
+    // Ждем, пока сервер не получит код
+    server_thread.join();
+
+    // Сервер остановлен, проверяем, получили ли код
+    if (code.empty()) {
+        std::cerr << "Authorization code not received!" << std::endl;
+        return;
+    }
+
+    // Обмен code на токен доступа
+    cpr::Response tokenResponse = cpr::Post(cpr::Url{"https://www.donationalerts.com/oauth/token"}, cpr::Payload{{"grant_type", "authorization_code"},
+                                                                                                                 {"client_id", client_id},
+                                                                                                                 {"client_secret", client_secret},
+                                                                                                                 {"redirect_uri", redirect_uri},
+                                                                                                                 {"code", code}});
+
+    if (tokenResponse.status_code != 200) {
+        throw std::exception(tokenResponse.url.c_str());
+    } else {
+        json jsonResponse = json::parse(tokenResponse.text);
+        AccessToken = jsonResponse["access_token"];
+        RefreshToken = jsonResponse["refresh_token"];
+
+        // Запишем токен в файл
+        std::ofstream outFile("da_config");  // Файл для хранения токена
+        if (outFile.is_open()) {
+            outFile << RefreshToken;
+            outFile.close();
+        }
+    }
+}
+
+void DonationAlertsClient::updateAccessToken() {
+    // Обновление токена доступа (Access Token)
+    if (RefreshToken.empty()) {
+        std::cerr << "No refresh token available!" << std::endl;
+        getAccessToken();
+        return;
+    }
+    cpr::Response tokenResponse = cpr::Post(cpr::Url{"https://www.donationalerts.com/oauth/token"}, cpr::Payload{{"grant_type", "refresh_token"},
+                                                                                                                 {"refresh_token", RefreshToken},
+                                                                                                                 {"client_id", client_id},
+                                                                                                                 {"client_secret", client_secret},
+                                                                                                                 {"scope", "oauth-donation-index"}});
+    if (tokenResponse.status_code != 200) {
+        throw std::exception(tokenResponse.text.c_str());
+    } else {
+        auto jsonResponse = json::parse(tokenResponse.text);
+        AccessToken = jsonResponse["access_token"];
+        RefreshToken = jsonResponse["refresh_token"];
+
+        // Запишем токен в файл
+        std::ofstream outFile("da_config");  // Файл для хранения токена
+        if (outFile.is_open()) {
+            outFile << RefreshToken;
+            outFile.close();
+        }
+    }
+}
+
+json DonationAlertsClient::getDonationList() {
+    try {
+        if (AccessToken.empty()) {
+            updateAccessToken();
+            getDonationList();
+        }
+        cpr::Response response =
+            cpr::Get(cpr::Url{"https://www.donationalerts.com/api/v1/alerts/donations"}, cpr::Header{{"Authorization", "Bearer " + AccessToken}});
+
+        if (response.status_code == 401) {  // Unauthorized, токен истек
+            updateAccessToken();
+            return this->getDonationList();
+        } else if (response.status_code != 200) {   // Ошибка
+            std::cerr << "Error getting donation list: " << response.text.c_str();
+        }
+        return json::parse(response.text)["data"];
+    } catch (std::exception ex) {
+        std::cerr << "Error getting donation list: " << ex.what() << std::endl;
+        return nullptr;
+    }
+}
+
+json DonationAlertsClient::getNewDonationMessage() {
+    try {
+        json donationLst = getDonationList();
+        if (donationLst.empty()) {
+            return nullptr;
+        }
+        json lastdonation;
+        std::ifstream file("LastDonation.json");
+        if (file.is_open()) {
+            file >> lastdonation;
+            file.close();
+        }
+        if (lastdonation != donationLst || lastdonation.empty()) {
+            std::ofstream filewr("LastDonation.json");
+            if (filewr.is_open()) {
+                filewr << donationLst.front().dump(4);
+                filewr.close();
+                return lastdonation.empty() ? donationLst.front(): lastdonation;
+            }
+        }
+        return nullptr;
+    } catch (std::exception ex) {
+        std::cerr << "Error getting new donation message: " << ex.what() << std::endl;
+        return nullptr;
+    }
 }
 
 #pragma endregion
